@@ -5,10 +5,20 @@ import { query, queryOne } from "@/lib/db";
 import { sendMessage, extractTextFromMessage, extractPhoneFromJid } from "@/lib/evolution";
 import { getSystemPrompt } from "@/lib/system-prompt";
 
-const openrouter = createOpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY!,
-  baseURL: "https://openrouter.ai/api/v1",
+const openai = createOpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
 });
+
+const MARTIN_PHONE = process.env.MARTIN_PHONE || "558481559502";
+
+async function notifyMartin(text: string) {
+  try {
+    await sendMessage(MARTIN_PHONE, text);
+    console.log("[NOTIFY] Martin notified about new lead");
+  } catch (err) {
+    console.error("[NOTIFY] Failed to notify Martin:", err);
+  }
+}
 
 export async function POST(req: Request) {
   try {
@@ -80,11 +90,11 @@ export async function POST(req: Request) {
 
     // Get system prompt (custom or default)
     const systemPrompt = getSystemPrompt(config?.system_prompt);
-    const modelId = config?.model || "anthropic/claude-sonnet-4";
+    const modelId = config?.model || "gpt-4o";
 
     // Generate AI response with tools
     const result = await generateText({
-      model: openrouter(modelId),
+      model: openai(modelId),
       system: systemPrompt,
       messages,
       tools: {
@@ -173,6 +183,17 @@ export async function POST(req: Request) {
               [phone]
             );
 
+            // Notify Martin
+            await notifyMartin(
+              `📋 *Novo Lead Capturado!*\n\n` +
+              `👤 *Nome:* ${nome}\n` +
+              `📱 *Telefone:* ${phone}\n` +
+              `📧 *Email:* ${email}\n` +
+              `🎯 *Interesse:* ${interesse}\n` +
+              `📝 *Detalhes:* ${detalhes || "-"}\n\n` +
+              `_Capturado pela Helena_`
+            );
+
             return { success: true, message: `Lead ${nome} registrado com sucesso` };
           },
         },
@@ -210,6 +231,19 @@ export async function POST(req: Request) {
             await query(
               `UPDATE conversations SET lead_captured = true, state = 'QUALIFIED', updated_at = NOW() WHERE phone_number = $1`,
               [phone]
+            );
+
+            // Notify Martin via WhatsApp
+            await notifyMartin(
+              `🔔 *Novo Lead Qualificado!*\n\n` +
+              `👤 *Nome:* ${nome}\n` +
+              `📱 *Telefone:* ${phone}\n` +
+              `📧 *Email:* ${email}\n` +
+              `🎯 *Serviço:* ${servico}\n` +
+              `📅 *Data viagem:* ${data_viagem || "Não definida"}\n` +
+              `👥 *Pessoas:* ${num_pessoas || "?"}\n` +
+              `📝 *Obs:* ${observacoes || "-"}\n\n` +
+              `_Lead capturado pela Helena às ${new Date().toLocaleTimeString("pt-BR", { timeZone: "America/Recife" })}_`
             );
 
             return { success: true, message: "Lead salvo. Especialista sera notificado." };
