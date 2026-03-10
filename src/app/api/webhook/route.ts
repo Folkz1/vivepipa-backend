@@ -34,11 +34,11 @@ async function notifyOwner(text: string) {
 }
 
 /** Transcribe audio using OpenAI Whisper */
-async function transcribeAudio(buffer: Buffer, mimetype: string): Promise<string> {
+async function transcribeAudio(buffer: Uint8Array, mimetype: string): Promise<string> {
   try {
     const ext = mimetype.includes("ogg") ? "ogg" : mimetype.includes("mp4") ? "m4a" : "webm";
     const formData = new FormData();
-    const blob = new Blob([new Uint8Array(buffer)], { type: mimetype });
+    const blob = new Blob([buffer], { type: mimetype });
     formData.append("file", blob, `audio.${ext}`);
     formData.append("model", "whisper-1");
     formData.append("language", "pt");
@@ -65,9 +65,9 @@ async function transcribeAudio(buffer: Buffer, mimetype: string): Promise<string
 }
 
 /** Describe image using GPT-4o-mini vision */
-async function describeImage(buffer: Buffer, mimetype: string, caption?: string): Promise<string> {
+async function describeImage(buffer: Uint8Array, mimetype: string, caption?: string): Promise<string> {
   try {
-    const base64 = buffer.toString("base64");
+    const base64 = Buffer.from(buffer).toString("base64");
     const dataUrl = `data:${mimetype};base64,${base64}`;
 
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {

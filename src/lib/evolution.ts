@@ -118,7 +118,7 @@ export async function downloadMedia(
   messageId: string,
   remoteJid: string,
   fromMe: boolean,
-): Promise<Buffer | null> {
+): Promise<Uint8Array | null> {
   const headers = { apikey: EVOLUTION_API_KEY, "Content-Type": "application/json" };
 
   // v2 endpoint: POST /chat/getBase64FromMediaMessage/{instance}
@@ -145,7 +145,7 @@ export async function downloadMedia(
       if (b64) {
         if (b64.includes(",")) b64 = b64.split(",")[1];
         console.log(`[EVOLUTION] Media downloaded via v2 for ${messageId}`);
-        return Buffer.from(b64, "base64");
+        return new Uint8Array(Buffer.from(b64, "base64"));
       }
     }
   } catch (err) {
@@ -163,7 +163,7 @@ export async function downloadMedia(
       if (b64) {
         if (b64.includes(",")) b64 = b64.split(",")[1];
         console.log(`[EVOLUTION] Media downloaded via v1 for ${messageId}`);
-        return Buffer.from(b64, "base64");
+        return new Uint8Array(Buffer.from(b64, "base64"));
       }
     }
   } catch (err) {
