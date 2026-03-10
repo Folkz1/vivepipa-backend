@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { query, queryOne } from "@/lib/db";
 import { validateApiSecret } from "@/lib/auth";
+import { DEFAULT_SYSTEM_PROMPT } from "@/lib/system-prompt";
 
 export async function GET(req: NextRequest) {
   if (!validateApiSecret(req)) {
@@ -17,7 +18,7 @@ export async function GET(req: NextRequest) {
 
   if (!config) {
     return Response.json({
-      system_prompt: "",
+      system_prompt: DEFAULT_SYSTEM_PROMPT,
       active: true,
       model: "gpt-4.1-mini",
       notification_phone: "",
@@ -25,7 +26,10 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return Response.json(config);
+  return Response.json({
+    ...config,
+    system_prompt: config.system_prompt || DEFAULT_SYSTEM_PROMPT,
+  });
 }
 
 export async function PUT(req: NextRequest) {

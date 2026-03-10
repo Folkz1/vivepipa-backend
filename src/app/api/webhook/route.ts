@@ -2,7 +2,14 @@ import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import { query, queryOne } from "@/lib/db";
-import { sendMessage, extractTextFromMessage, extractPhoneFromJid } from "@/lib/evolution";
+import {
+  sendMessage,
+  extractTextFromMessage,
+  extractPhoneFromJid,
+  getMediaType,
+  getMediaMimetype,
+  downloadMedia,
+} from "@/lib/evolution";
 import { getSystemPrompt } from "@/lib/system-prompt";
 
 const openai = createOpenAI({
@@ -26,6 +33,84 @@ async function notifyOwner(text: string) {
   }
 }
 
+/** Transcribe audio using OpenAI Whisper */
+async function transcribeAudio(buffer: Buffer, mimetype: string): Promise<string> {
+  try {
+    const ext = mimetype.includes("ogg") ? "ogg" : mimetype.includes("mp4") ? "m4a" : "webm";
+    const formData = new FormData();
+    const blob = new Blob([buffer], { type: mimetype });
+    formData.append("file", blob, `audio.${ext}`);
+    formData.append("model", "whisper-1");
+    formData.append("language", "pt");
+
+    const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: formData,
+    });
+
+    if (!resp.ok) {
+      console.error("[WHISPER] Failed:", resp.status, await resp.text());
+      return "";
+    }
+
+    const data = await resp.json();
+    const text = data.text as string;
+    console.log(`[WHISPER] Transcribed: ${text.substring(0, 100)}...`);
+    return text;
+  } catch (err) {
+    console.error("[WHISPER] Error:", err);
+    return "";
+  }
+}
+
+/** Describe image using GPT-4o-mini vision */
+async function describeImage(buffer: Buffer, mimetype: string, caption?: string): Promise<string> {
+  try {
+    const base64 = buffer.toString("base64");
+    const dataUrl = `data:${mimetype};base64,${base64}`;
+
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: caption
+                  ? `Descreva esta imagem em portugues de forma concisa. O usuario enviou com a legenda: "${caption}"`
+                  : "Descreva esta imagem em portugues de forma concisa para contexto de uma conversa sobre turismo em Pipa/RN.",
+              },
+              { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+            ],
+          },
+        ],
+        max_tokens: 300,
+      }),
+    });
+
+    if (!resp.ok) {
+      console.error("[VISION] Failed:", resp.status, await resp.text());
+      return "";
+    }
+
+    const data = await resp.json();
+    const desc = data.choices?.[0]?.message?.content || "";
+    console.log(`[VISION] Described: ${desc.substring(0, 100)}...`);
+    return desc;
+  } catch (err) {
+    console.error("[VISION] Error:", err);
+    return "";
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const payload = await req.json();
@@ -41,6 +126,7 @@ export async function POST(req: Request) {
     const fromMe: boolean = key.fromMe || false;
     const pushName: string = data.pushName || "";
     const messageData = data.message || {};
+    const messageId: string = key.id || "";
 
     // Skip own messages and groups
     if (fromMe) return Response.json({ ok: true });
@@ -48,11 +134,55 @@ export async function POST(req: Request) {
     if (!remoteJid) return Response.json({ ok: true });
 
     const phone = extractPhoneFromJid(remoteJid);
-    const userText = extractTextFromMessage(messageData);
+
+    // Extract text content
+    let userText = extractTextFromMessage(messageData);
+
+    // Handle media messages (audio, image, document)
+    const mediaType = getMediaType(messageData);
+    if (mediaType && messageId) {
+      const mimetype = getMediaMimetype(messageData) || "application/octet-stream";
+
+      // Download media via Evolution API v2 (same pattern as Orquestra)
+      const mediaBuffer = await downloadMedia(messageId, remoteJid, fromMe);
+
+      if (mediaBuffer) {
+        switch (mediaType) {
+          case "audio": {
+            const transcription = await transcribeAudio(mediaBuffer, mimetype);
+            if (transcription) {
+              userText = transcription;
+            } else {
+              userText = userText || "[Audio recebido mas nao foi possivel transcrever]";
+            }
+            break;
+          }
+          case "image": {
+            const description = await describeImage(mediaBuffer, mimetype, userText || undefined);
+            if (description) {
+              userText = `[O usuario enviou uma imagem: ${description}]${userText ? `\nLegenda: ${userText}` : ""}`;
+            } else {
+              userText = userText || "[Imagem recebida]";
+            }
+            break;
+          }
+          case "document": {
+            const fileName = (messageData.documentMessage as Record<string, unknown>)?.fileName || "arquivo";
+            userText = userText || `[Usuario enviou um documento: ${fileName}]`;
+            break;
+          }
+        }
+      } else if (!userText) {
+        // Media couldn't be downloaded, provide context
+        if (mediaType === "audio") userText = "[Audio recebido mas nao disponivel para transcricao]";
+        else if (mediaType === "image") userText = "[Imagem recebida mas nao disponivel para analise]";
+        else userText = "[Documento recebido]";
+      }
+    }
 
     if (!userText.trim()) return Response.json({ ok: true });
 
-    console.log(`[WEBHOOK] ${phone} (${pushName}): ${userText}`);
+    console.log(`[WEBHOOK] ${phone} (${pushName}): ${userText.substring(0, 200)}`);
 
     // Check if bot is active
     const config = await queryOne<{ active: boolean; system_prompt: string; model: string }>(
@@ -154,8 +284,8 @@ export async function POST(req: Request) {
               : [{ message: "Nenhum servico encontrado" }];
           },
         },
-        qualificarLead: {
-          description: "Registra um lead qualificado quando o usuario demonstrou interesse e forneceu dados de contato",
+        registrarLead: {
+          description: "Registra um lead quando o usuario forneceu nome, email e demonstrou interesse em servico. Use UMA VEZ por conversa.",
           parameters: z.object({
             nome: z.string().describe("Nome completo do usuario"),
             email: z.string().describe("Email do usuario"),
@@ -163,57 +293,30 @@ export async function POST(req: Request) {
             detalhes: z.string().optional().describe("Detalhes adicionais (data, num pessoas, etc)"),
           }),
           execute: async ({ nome, email, interesse, detalhes }) => {
-            // Get or create conversation
-            const conv = await queryOne<{ id: string }>(
-              `SELECT id FROM conversations WHERE phone_number = $1`,
-              [phone]
+            // Check if lead already exists for this phone + service
+            const existing = await queryOne<{ id: string }>(
+              `SELECT id FROM leads WHERE phone_number = $1 AND service_category = $2`,
+              [phone, interesse]
             );
 
-            await query(
-              `INSERT INTO leads (conversation_id, phone_number, full_name, email, service_category, service_interest, qualification_data, status)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, 'new')`,
-              [
-                conv?.id || null,
-                phone,
-                nome,
-                email,
-                interesse,
-                detalhes || null,
-                JSON.stringify({ nome, email, interesse, detalhes, qualified_at: new Date().toISOString() }),
-              ]
-            );
+            if (existing) {
+              await query(
+                `UPDATE leads SET
+                  full_name = $1, email = $2, service_interest = $3,
+                  qualification_data = $4, updated_at = NOW()
+                 WHERE id = $5`,
+                [
+                  nome,
+                  email,
+                  detalhes || interesse,
+                  JSON.stringify({ nome, email, interesse, detalhes, updated_at: new Date().toISOString() }),
+                  existing.id,
+                ]
+              );
+              console.log(`[LEAD] Updated existing lead ${existing.id} for ${phone}`);
+              return { success: true, message: `Lead ${nome} atualizado com sucesso` };
+            }
 
-            // Update conversation
-            await query(
-              `UPDATE conversations SET lead_captured = true, updated_at = NOW() WHERE phone_number = $1`,
-              [phone]
-            );
-
-            // Notify Martin
-            await notifyOwner(
-              `📋 *Novo Lead Capturado!*\n\n` +
-              `👤 *Nome:* ${nome}\n` +
-              `📱 *Telefone:* ${phone}\n` +
-              `📧 *Email:* ${email}\n` +
-              `🎯 *Interesse:* ${interesse}\n` +
-              `📝 *Detalhes:* ${detalhes || "-"}\n\n` +
-              `_Capturado pela Helena_`
-            );
-
-            return { success: true, message: `Lead ${nome} registrado com sucesso` };
-          },
-        },
-        salvarLead: {
-          description: "Salva lead completo e marca para acompanhamento pelo especialista humano",
-          parameters: z.object({
-            nome: z.string(),
-            email: z.string(),
-            servico: z.string(),
-            data_viagem: z.string().optional(),
-            num_pessoas: z.number().optional(),
-            observacoes: z.string().optional(),
-          }),
-          execute: async ({ nome, email, servico, data_viagem, num_pessoas, observacoes }) => {
             const conv = await queryOne<{ id: string }>(
               `SELECT id FROM conversations WHERE phone_number = $1`,
               [phone]
@@ -221,38 +324,35 @@ export async function POST(req: Request) {
 
             await query(
               `INSERT INTO leads (conversation_id, phone_number, full_name, email, service_category, service_interest, qualification_data, status, priority)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, 'qualified', 1)
-               ON CONFLICT DO NOTHING`,
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 'new', 1)`,
               [
                 conv?.id || null,
                 phone,
                 nome,
                 email,
-                servico,
-                `${servico} - ${data_viagem || "sem data"} - ${num_pessoas || "?"} pessoas`,
-                JSON.stringify({ nome, email, servico, data_viagem, num_pessoas, observacoes, saved_at: new Date().toISOString() }),
+                interesse,
+                detalhes || interesse,
+                JSON.stringify({ nome, email, interesse, detalhes, qualified_at: new Date().toISOString() }),
               ]
             );
 
             await query(
-              `UPDATE conversations SET lead_captured = true, state = 'QUALIFIED', updated_at = NOW() WHERE phone_number = $1`,
+              `UPDATE conversations SET lead_captured = true, updated_at = NOW() WHERE phone_number = $1`,
               [phone]
             );
 
-            // Notify Martin via WhatsApp
             await notifyOwner(
-              `🔔 *Novo Lead Qualificado!*\n\n` +
-              `👤 *Nome:* ${nome}\n` +
-              `📱 *Telefone:* ${phone}\n` +
-              `📧 *Email:* ${email}\n` +
-              `🎯 *Serviço:* ${servico}\n` +
-              `📅 *Data viagem:* ${data_viagem || "Não definida"}\n` +
-              `👥 *Pessoas:* ${num_pessoas || "?"}\n` +
-              `📝 *Obs:* ${observacoes || "-"}\n\n` +
-              `_Lead capturado pela Helena às ${new Date().toLocaleTimeString("pt-BR", { timeZone: "America/Recife" })}_`
+              `*Novo Lead Capturado!*\n\n` +
+              `*Nome:* ${nome}\n` +
+              `*Telefone:* ${phone}\n` +
+              `*Email:* ${email}\n` +
+              `*Interesse:* ${interesse}\n` +
+              `*Detalhes:* ${detalhes || "-"}\n\n` +
+              `_Capturado pela Helena_`
             );
 
-            return { success: true, message: "Lead salvo. Especialista sera notificado." };
+            console.log(`[LEAD] New lead created for ${phone}: ${nome} - ${interesse}`);
+            return { success: true, message: `Lead ${nome} registrado com sucesso` };
           },
         },
       },
@@ -268,7 +368,7 @@ export async function POST(req: Request) {
         [phone, "assistant", aiResponse]
       );
 
-      // Send via Evolution
+      // Send via Evolution (with typing + smart splitting)
       await sendMessage(phone, aiResponse);
       console.log(`[WEBHOOK] Responded to ${phone}: ${aiResponse.substring(0, 100)}...`);
     }
