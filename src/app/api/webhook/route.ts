@@ -90,7 +90,7 @@ export async function POST(req: Request) {
 
     // Get system prompt (custom or default)
     const systemPrompt = getSystemPrompt(config?.system_prompt);
-    const modelId = config?.model || "gpt-4o";
+    const modelId = config?.model || "gpt-4.1-mini";
 
     // Generate AI response with tools
     const result = await generateText({
