@@ -117,6 +117,8 @@ export async function PUT(req: NextRequest) {
     return Response.json({ error: "No fields to update" }, { status: 400 });
   }
 
+  setClauses.push("updated_at = NOW()");
+
   params.push(id);
   await query(
     `UPDATE servicos SET ${setClauses.join(", ")} WHERE id = $${params.length}`,
