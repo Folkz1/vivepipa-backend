@@ -348,7 +348,7 @@ export async function POST(req: Request) {
               `*Email:* ${email}\n` +
               `*Interesse:* ${interesse}\n` +
               `*Detalhes:* ${detalhes || "-"}\n\n` +
-              `_Capturado pela Helena_`
+              `_Capturado pela Sofia_`
             );
 
             console.log(`[LEAD] New lead created for ${phone}: ${nome} - ${interesse}`);
