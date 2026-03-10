@@ -38,7 +38,7 @@ async function transcribeAudio(buffer: Buffer, mimetype: string): Promise<string
   try {
     const ext = mimetype.includes("ogg") ? "ogg" : mimetype.includes("mp4") ? "m4a" : "webm";
     const formData = new FormData();
-    const blob = new Blob([buffer], { type: mimetype });
+    const blob = new Blob([new Uint8Array(buffer)], { type: mimetype });
     formData.append("file", blob, `audio.${ext}`);
     formData.append("model", "whisper-1");
     formData.append("language", "pt");
