@@ -9,14 +9,20 @@ const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-const MARTIN_PHONE = process.env.MARTIN_PHONE || "558481559502";
+async function getNotificationPhone(): Promise<string> {
+  const config = await queryOne<{ notification_phone: string }>(
+    `SELECT notification_phone FROM bot_config WHERE id = 1`
+  );
+  return config?.notification_phone || process.env.MARTIN_PHONE || "558481559502";
+}
 
-async function notifyMartin(text: string) {
+async function notifyOwner(text: string) {
   try {
-    await sendMessage(MARTIN_PHONE, text);
-    console.log("[NOTIFY] Martin notified about new lead");
+    const phone = await getNotificationPhone();
+    await sendMessage(phone, text);
+    console.log(`[NOTIFY] Owner (${phone}) notified about new lead`);
   } catch (err) {
-    console.error("[NOTIFY] Failed to notify Martin:", err);
+    console.error("[NOTIFY] Failed to notify owner:", err);
   }
 }
 
@@ -184,7 +190,7 @@ export async function POST(req: Request) {
             );
 
             // Notify Martin
-            await notifyMartin(
+            await notifyOwner(
               `📋 *Novo Lead Capturado!*\n\n` +
               `👤 *Nome:* ${nome}\n` +
               `📱 *Telefone:* ${phone}\n` +
@@ -234,7 +240,7 @@ export async function POST(req: Request) {
             );
 
             // Notify Martin via WhatsApp
-            await notifyMartin(
+            await notifyOwner(
               `🔔 *Novo Lead Qualificado!*\n\n` +
               `👤 *Nome:* ${nome}\n` +
               `📱 *Telefone:* ${phone}\n` +
