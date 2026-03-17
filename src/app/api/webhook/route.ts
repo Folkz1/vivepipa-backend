@@ -473,17 +473,23 @@ export async function POST(req: Request) {
         maxSteps: 5,
       });
     } catch (err) {
-      const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-      console.log(`[WEBHOOK] OpenAI failed (${errMsg.substring(0, 100)}), trying OpenRouter fallback`);
-      const fallbackModel = modelId.includes("/") ? modelId : `openai/${modelId}`;
-      result = await generateText({
-        model: openrouterFallback(fallbackModel),
-        system: systemPrompt,
-        messages,
-        tools,
-        maxSteps: 5,
-      });
-      console.log("[WEBHOOK] OpenRouter fallback succeeded");
+      const errDetail = err instanceof Error ? `${err.name}: ${err.message}${(err as Record<string,unknown>).cause ? ` | cause: ${(err as Record<string,unknown>).cause}` : ""}` : String(err);
+      console.log(`[WEBHOOK] OpenAI failed: ${errDetail}`);
+      try {
+        const fallbackModel = modelId.includes("/") ? modelId : `openai/${modelId}`;
+        result = await generateText({
+          model: openrouterFallback(fallbackModel),
+          system: systemPrompt,
+          messages,
+          tools,
+          maxSteps: 5,
+        });
+        console.log("[WEBHOOK] OpenRouter fallback succeeded");
+      } catch (err2) {
+        const err2Detail = err2 instanceof Error ? `${err2.name}: ${err2.message}` : String(err2);
+        console.error(`[WEBHOOK] OpenRouter fallback ALSO failed: ${err2Detail}`);
+        throw new Error(`Primary: ${errDetail.substring(0, 200)} | Fallback: ${err2Detail.substring(0, 200)}`);
+      }
     }
 
     const aiResponse = result.text;
