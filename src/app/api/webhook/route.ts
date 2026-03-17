@@ -19,12 +19,29 @@ const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-// OpenRouter fallback (Diego's key) - used when OpenAI quota exhausted
-const openrouterFallback = createOpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY || "",
-  baseURL: "https://openrouter.ai/api/v1",
-  compatibility: "compatible",
-});
+/** OpenRouter fallback via direct fetch (bypasses AI SDK compatibility issues) */
+async function generateWithOpenRouter(
+  systemPrompt: string,
+  chatMessages: Array<{ role: string; content: string }>,
+): Promise<string> {
+  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-4.1-mini",
+      messages: [{ role: "system", content: systemPrompt }, ...chatMessages],
+    }),
+  });
+  if (!resp.ok) {
+    const errBody = await resp.text();
+    throw new Error(`OpenRouter ${resp.status}: ${errBody.substring(0, 200)}`);
+  }
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || "";
+}
 
 /** Web search via OpenAI Responses API (web_search_preview) */
 async function webSearch(searchQuery: string): Promise<string> {
@@ -476,17 +493,11 @@ export async function POST(req: Request) {
       const errDetail = err instanceof Error ? `${err.name}: ${err.message}${(err as Record<string,unknown>).cause ? ` | cause: ${(err as Record<string,unknown>).cause}` : ""}` : String(err);
       console.log(`[WEBHOOK] OpenAI failed: ${errDetail}`);
       try {
-        const fallbackModel = modelId.includes("/") ? modelId : `openai/${modelId}`;
-        result = await generateText({
-          model: openrouterFallback(fallbackModel),
-          system: systemPrompt,
-          messages,
-          tools,
-          maxSteps: 5,
-        });
+        const fallbackText = await generateWithOpenRouter(systemPrompt, messages);
+        result = { text: fallbackText } as typeof result;
         console.log("[WEBHOOK] OpenRouter fallback succeeded");
       } catch (err2) {
-        const err2Detail = err2 instanceof Error ? `${err2.name}: ${err2.message}` : String(err2);
+        const err2Detail = err2 instanceof Error ? err2.message : String(err2);
         console.error(`[WEBHOOK] OpenRouter fallback ALSO failed: ${err2Detail}`);
         throw new Error(`Primary: ${errDetail.substring(0, 200)} | Fallback: ${err2Detail.substring(0, 200)}`);
       }
@@ -550,17 +561,12 @@ export async function GET(req: Request) {
     }
   }
 
-  if (url.searchParams.get("test") === "sdk") {
+  if (url.searchParams.get("test") === "fallback") {
     try {
-      const result = await generateText({
-        model: openrouterFallback("openai/gpt-4.1-mini"),
-        messages: [{ role: "user", content: "Diga apenas: ok" }],
-        maxTokens: 10,
-      });
-      return Response.json({ sdk: "ok", text: result.text });
+      const text = await generateWithOpenRouter("Responda em uma palavra.", [{ role: "user", content: "Oi" }]);
+      return Response.json({ fallback: "ok", text });
     } catch (err) {
-      const detail = err instanceof Error ? { name: err.name, message: err.message, cause: String((err as Record<string, unknown>).cause || "") } : String(err);
-      return Response.json({ sdk: "fail", error: detail });
+      return Response.json({ fallback: "fail", error: err instanceof Error ? err.message : String(err) });
     }
   }
 
