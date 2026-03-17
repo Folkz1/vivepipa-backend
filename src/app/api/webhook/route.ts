@@ -13,25 +13,42 @@ import {
 } from "@/lib/evolution";
 import { getSystemPrompt } from "@/lib/system-prompt";
 
-// OpenRouter for AI responses (with web search plugin)
+// OpenRouter for AI responses (clean, no fetch wrapper)
 const openrouter = createOpenAI({
   apiKey: process.env.OPENROUTER_API_KEY!,
   baseURL: "https://openrouter.ai/api/v1",
   compatibility: "compatible",
-  fetch: async (url, init) => {
-    // Inject OpenRouter web search plugin into every AI request
-    if (init?.body && typeof init.body === "string") {
-      try {
-        const body = JSON.parse(init.body);
-        body.plugins = [{ id: "web" }];
-        return globalThis.fetch(url, { ...init, body: JSON.stringify(body) });
-      } catch {
-        // If body parse fails, send as-is
-      }
-    }
-    return globalThis.fetch(url, init);
-  },
 });
+
+/** Web search via OpenRouter plugin (called as a tool, not injected globally) */
+async function webSearch(searchQuery: string): Promise<string> {
+  try {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-4.1-mini",
+        messages: [{ role: "user", content: `Pesquise e resuma em português de forma concisa: ${searchQuery}` }],
+        max_tokens: 600,
+        plugins: [{ id: "web" }],
+      }),
+    });
+    if (!resp.ok) {
+      console.error("[WEBSEARCH] Failed:", resp.status);
+      return "Pesquisa indisponível no momento";
+    }
+    const data = await resp.json();
+    const result = data.choices?.[0]?.message?.content || "Nenhum resultado encontrado";
+    console.log(`[WEBSEARCH] Query: "${searchQuery}" -> ${result.substring(0, 100)}...`);
+    return result;
+  } catch (err) {
+    console.error("[WEBSEARCH] Error:", err);
+    return "Erro ao pesquisar na web";
+  }
+}
 
 // OpenAI direct for Whisper (transcription) and TTS (audio response)
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
@@ -423,6 +440,15 @@ export async function POST(req: Request) {
 
             console.log(`[LEAD] New lead created for ${phone}: ${nome} - ${interesse}`);
             return { success: true, message: `Lead ${nome} registrado com sucesso` };
+          },
+        },
+        buscarWeb: {
+          description: "Pesquisa na internet para informacoes atualizadas que nao estao na base local (eventos, clima, noticias, horarios atualizados, etc)",
+          parameters: z.object({
+            query: z.string().describe("O que pesquisar na web (em portugues)"),
+          }),
+          execute: async ({ query: q }) => {
+            return await webSearch(q);
           },
         },
       },
