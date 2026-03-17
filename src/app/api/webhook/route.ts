@@ -484,8 +484,9 @@ export async function POST(req: Request) {
 
     return Response.json({ ok: true });
   } catch (error) {
-    console.error("[WEBHOOK] Error:", error);
-    return Response.json({ error: "Internal error" }, { status: 500 });
+    const errMsg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error("[WEBHOOK] Error:", errMsg, error instanceof Error ? error.stack : "");
+    return Response.json({ error: errMsg }, { status: 500 });
   }
 }
 
