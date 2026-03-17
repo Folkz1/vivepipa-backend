@@ -528,5 +528,15 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  return Response.json({ status: "Vive Pipa webhook active", version: "2.1", features: ["openrouter", "websearch", "tts", "base64-media"] });
+  return Response.json({
+    status: "Vive Pipa webhook active",
+    version: "2.1",
+    features: ["openrouter", "websearch", "tts", "base64-media"],
+    env: {
+      OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+      OPENROUTER_API_KEY: !!process.env.OPENROUTER_API_KEY,
+      DATABASE_URL: !!process.env.DATABASE_URL,
+      EVOLUTION_URL: !!process.env.EVOLUTION_URL,
+    },
+  });
 }
