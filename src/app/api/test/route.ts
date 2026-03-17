@@ -32,6 +32,11 @@ async function generateWithOpenRouter(
   return data.choices?.[0]?.message?.content || "";
 }
 
+/** Handle CORS preflight */
+export async function OPTIONS() {
+  return new Response(null, { status: 200 });
+}
+
 /** Test bot endpoint — same AI logic as webhook but no WhatsApp sending */
 export async function POST(req: NextRequest) {
   if (!validateApiSecret(req)) {
