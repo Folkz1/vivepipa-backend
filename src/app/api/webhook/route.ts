@@ -473,20 +473,17 @@ export async function POST(req: Request) {
         maxSteps: 5,
       });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes("quota") || errMsg.includes("429") || errMsg.includes("billing")) {
-        console.log("[WEBHOOK] OpenAI quota exceeded, using OpenRouter fallback");
-        const fallbackModel = modelId.includes("/") ? modelId : `openai/${modelId}`;
-        result = await generateText({
-          model: openrouterFallback(fallbackModel),
-          system: systemPrompt,
-          messages,
-          tools,
-          maxSteps: 5,
-        });
-      } else {
-        throw err;
-      }
+      const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      console.log(`[WEBHOOK] OpenAI failed (${errMsg.substring(0, 100)}), trying OpenRouter fallback`);
+      const fallbackModel = modelId.includes("/") ? modelId : `openai/${modelId}`;
+      result = await generateText({
+        model: openrouterFallback(fallbackModel),
+        system: systemPrompt,
+        messages,
+        tools,
+        maxSteps: 5,
+      });
+      console.log("[WEBHOOK] OpenRouter fallback succeeded");
     }
 
     const aiResponse = result.text;
