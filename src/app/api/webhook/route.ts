@@ -14,9 +14,16 @@ import {
 } from "@/lib/evolution";
 import { getSystemPrompt } from "@/lib/system-prompt";
 
-// OpenAI direct (Martin's key) for AI responses
+// OpenAI direct (Martin's key) - primary
 const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
+});
+
+// OpenRouter fallback (Diego's key) - used when OpenAI quota exhausted
+const openrouterFallback = createOpenAI({
+  apiKey: process.env.OPENROUTER_API_KEY || "",
+  baseURL: "https://openrouter.ai/api/v1",
+  compatibility: "compatible",
 });
 
 /** Web search via OpenAI Responses API (web_search_preview) */
@@ -321,12 +328,8 @@ export async function POST(req: Request) {
     // Show typing indicator BEFORE AI generates response
     await sendPresence(phone, true);
 
-    // Generate AI response with tools (OpenRouter + web search)
-    const result = await generateText({
-      model: openai(modelId),
-      system: systemPrompt,
-      messages,
-      tools: {
+    // Tools shared between primary and fallback
+    const tools = {
         buscarKB: {
           description: "Busca informacoes na base de conhecimento de Pipa (restaurantes, praias, hospedagem, dicas, emergencias)",
           parameters: z.object({
@@ -457,9 +460,34 @@ export async function POST(req: Request) {
             return await webSearch(q);
           },
         },
-      },
-      maxSteps: 5,
-    });
+    };
+
+    // Try OpenAI first, fallback to OpenRouter if quota exhausted
+    let result;
+    try {
+      result = await generateText({
+        model: openai(modelId),
+        system: systemPrompt,
+        messages,
+        tools,
+        maxSteps: 5,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes("quota") || errMsg.includes("429") || errMsg.includes("billing")) {
+        console.log("[WEBHOOK] OpenAI quota exceeded, using OpenRouter fallback");
+        const fallbackModel = modelId.includes("/") ? modelId : `openai/${modelId}`;
+        result = await generateText({
+          model: openrouterFallback(fallbackModel),
+          system: systemPrompt,
+          messages,
+          tools,
+          maxSteps: 5,
+        });
+      } else {
+        throw err;
+      }
+    }
 
     const aiResponse = result.text;
 
