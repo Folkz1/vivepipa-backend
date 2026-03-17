@@ -527,16 +527,51 @@ export async function POST(req: Request) {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  if (url.searchParams.get("test") === "openrouter") {
+    try {
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4.1-mini",
+          messages: [{ role: "user", content: "Diga apenas: ok" }],
+          max_tokens: 10,
+        }),
+      });
+      const data = await resp.json();
+      return Response.json({ openrouter: "ok", status: resp.status, response: data });
+    } catch (err) {
+      return Response.json({ openrouter: "fail", error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  if (url.searchParams.get("test") === "sdk") {
+    try {
+      const result = await generateText({
+        model: openrouterFallback("openai/gpt-4.1-mini"),
+        messages: [{ role: "user", content: "Diga apenas: ok" }],
+        maxTokens: 10,
+      });
+      return Response.json({ sdk: "ok", text: result.text });
+    } catch (err) {
+      const detail = err instanceof Error ? { name: err.name, message: err.message, cause: String((err as Record<string, unknown>).cause || "") } : String(err);
+      return Response.json({ sdk: "fail", error: detail });
+    }
+  }
+
   return Response.json({
     status: "Vive Pipa webhook active",
     version: "2.1",
-    features: ["openrouter", "websearch", "tts", "base64-media"],
+    features: ["openai-primary", "openrouter-fallback", "websearch", "tts", "base64-media"],
     env: {
       OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
       OPENROUTER_API_KEY: !!process.env.OPENROUTER_API_KEY,
       DATABASE_URL: !!process.env.DATABASE_URL,
-      EVOLUTION_URL: !!process.env.EVOLUTION_URL,
     },
   });
 }
