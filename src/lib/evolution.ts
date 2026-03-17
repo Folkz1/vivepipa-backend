@@ -3,7 +3,7 @@ const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY!;
 const EVOLUTION_INSTANCE = process.env.EVOLUTION_INSTANCE!;
 
 /** Send typing indicator (composing) */
-async function sendPresence(phone: string, composing: boolean) {
+export async function sendPresence(phone: string, composing: boolean) {
   try {
     await fetch(
       `${EVOLUTION_URL}/chat/presence/${EVOLUTION_INSTANCE}`,

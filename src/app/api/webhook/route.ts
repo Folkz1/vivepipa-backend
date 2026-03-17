@@ -5,6 +5,7 @@ import { query, queryOne } from "@/lib/db";
 import {
   sendMessage,
   sendAudioMessage,
+  sendPresence,
   extractTextFromMessage,
   extractPhoneFromJid,
   getMediaType,
@@ -13,35 +14,38 @@ import {
 } from "@/lib/evolution";
 import { getSystemPrompt } from "@/lib/system-prompt";
 
-// OpenRouter for AI responses (clean, no fetch wrapper)
-const openrouter = createOpenAI({
-  apiKey: process.env.OPENROUTER_API_KEY!,
-  baseURL: "https://openrouter.ai/api/v1",
-  compatibility: "compatible",
+// OpenAI direct (Martin's key) for AI responses
+const openai = createOpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
 });
 
-/** Web search via OpenRouter plugin (called as a tool, not injected globally) */
+/** Web search via OpenAI Responses API (web_search_preview) */
 async function webSearch(searchQuery: string): Promise<string> {
   try {
-    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const resp = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "openai/gpt-4.1-mini",
-        messages: [{ role: "user", content: `Pesquise e resuma em português de forma concisa: ${searchQuery}` }],
-        max_tokens: 600,
-        plugins: [{ id: "web" }],
+        model: "gpt-4.1-mini",
+        tools: [{ type: "web_search_preview" }],
+        input: `Pesquise e resuma em português de forma concisa: ${searchQuery}`,
       }),
     });
     if (!resp.ok) {
-      console.error("[WEBSEARCH] Failed:", resp.status);
+      console.error("[WEBSEARCH] Failed:", resp.status, await resp.text());
       return "Pesquisa indisponível no momento";
     }
     const data = await resp.json();
-    const result = data.choices?.[0]?.message?.content || "Nenhum resultado encontrado";
+    // Responses API returns output array with message items
+    const output = data.output || [];
+    const textItems = output.filter((item: Record<string, unknown>) => item.type === "message");
+    const result = textItems.map((item: Record<string, unknown>) => {
+      const content = (item.content as Array<Record<string, unknown>>) || [];
+      return content.filter((c) => c.type === "output_text").map((c) => c.text).join("");
+    }).join("\n") || "Nenhum resultado encontrado";
     console.log(`[WEBSEARCH] Query: "${searchQuery}" -> ${result.substring(0, 100)}...`);
     return result;
   } catch (err) {
@@ -312,12 +316,14 @@ export async function POST(req: Request) {
 
     // Get system prompt (custom or default)
     const systemPrompt = getSystemPrompt(config?.system_prompt);
-    // Model on OpenRouter (e.g. "openai/gpt-4.1-mini")
-    const modelId = config?.model || "openai/gpt-4.1-mini";
+    const modelId = config?.model || "gpt-4.1-mini";
+
+    // Show typing indicator BEFORE AI generates response
+    await sendPresence(phone, true);
 
     // Generate AI response with tools (OpenRouter + web search)
     const result = await generateText({
-      model: openrouter(modelId),
+      model: openai(modelId),
       system: systemPrompt,
       messages,
       tools: {
