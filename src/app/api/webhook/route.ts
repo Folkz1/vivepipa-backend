@@ -4,6 +4,7 @@ import { z } from "zod";
 import { query, queryOne } from "@/lib/db";
 import {
   sendMessage,
+  sendAudioMessage,
   extractTextFromMessage,
   extractPhoneFromJid,
   getMediaType,
@@ -12,9 +13,28 @@ import {
 } from "@/lib/evolution";
 import { getSystemPrompt } from "@/lib/system-prompt";
 
-const openai = createOpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
+// OpenRouter for AI responses (with web search plugin)
+const openrouter = createOpenAI({
+  apiKey: process.env.OPENROUTER_API_KEY!,
+  baseURL: "https://openrouter.ai/api/v1",
+  compatibility: "compatible",
+  fetch: async (url, init) => {
+    // Inject OpenRouter web search plugin into every AI request
+    if (init?.body && typeof init.body === "string") {
+      try {
+        const body = JSON.parse(init.body);
+        body.plugins = [{ id: "web" }];
+        return globalThis.fetch(url, { ...init, body: JSON.stringify(body) });
+      } catch {
+        // If body parse fails, send as-is
+      }
+    }
+    return globalThis.fetch(url, init);
+  },
 });
+
+// OpenAI direct for Whisper (transcription) and TTS (audio response)
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
 
 async function getNotificationPhone(): Promise<string> {
   const config = await queryOne<{ notification_phone: string }>(
@@ -45,7 +65,7 @@ async function transcribeAudio(buffer: Uint8Array, mimetype: string): Promise<st
 
     const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
       body: formData,
     });
 
@@ -64,6 +84,41 @@ async function transcribeAudio(buffer: Uint8Array, mimetype: string): Promise<st
   }
 }
 
+/** Convert text to speech using OpenAI TTS */
+async function textToSpeech(text: string): Promise<string | null> {
+  try {
+    // Truncate to ~4000 chars (TTS limit is 4096)
+    const input = text.length > 4000 ? text.substring(0, 4000) + "..." : text;
+
+    const resp = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "tts-1",
+        input,
+        voice: "nova", // Friendly female voice, good for tourism concierge
+        response_format: "mp3",
+      }),
+    });
+
+    if (!resp.ok) {
+      console.error("[TTS] Failed:", resp.status, await resp.text());
+      return null;
+    }
+
+    const audioBuffer = await resp.arrayBuffer();
+    const base64 = Buffer.from(audioBuffer).toString("base64");
+    console.log(`[TTS] Generated audio: ${(audioBuffer.byteLength / 1024).toFixed(1)}KB`);
+    return `data:audio/mp3;base64,${base64}`;
+  } catch (err) {
+    console.error("[TTS] Error:", err);
+    return null;
+  }
+}
+
 /** Describe image using GPT-4o-mini vision */
 async function describeImage(buffer: Uint8Array, mimetype: string, caption?: string): Promise<string> {
   try {
@@ -74,7 +129,7 @@ async function describeImage(buffer: Uint8Array, mimetype: string, caption?: str
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
@@ -138,17 +193,21 @@ export async function POST(req: Request) {
     // Extract text content
     let userText = extractTextFromMessage(messageData);
 
-    // Handle media messages (audio, image, document)
+    // Track if input was audio (for audio response)
+    let inputWasAudio = false;
+
+    // Handle media messages (audio, image, video, document)
     const mediaType = getMediaType(messageData);
     if (mediaType && messageId) {
       const mimetype = getMediaMimetype(messageData) || "application/octet-stream";
 
-      // Download media via Evolution API v2 (same pattern as Orquestra)
-      const mediaBuffer = await downloadMedia(messageId, remoteJid, fromMe);
+      // Download media - tries webhook base64 first, then Evolution API
+      const mediaBuffer = await downloadMedia(messageId, remoteJid, fromMe, data);
 
       if (mediaBuffer) {
         switch (mediaType) {
           case "audio": {
+            inputWasAudio = true;
             const transcription = await transcribeAudio(mediaBuffer, mimetype);
             if (transcription) {
               userText = transcription;
@@ -166,6 +225,13 @@ export async function POST(req: Request) {
             }
             break;
           }
+          case "video": {
+            userText = userText || "[Video recebido - nao e possivel assistir, mas posso ajudar com o que voce precisa!]";
+            if (userText && !userText.startsWith("[")) {
+              userText = `[O usuario enviou um video com legenda]\nLegenda: ${userText}`;
+            }
+            break;
+          }
           case "document": {
             const fileName = (messageData.documentMessage as Record<string, unknown>)?.fileName || "arquivo";
             userText = userText || `[Usuario enviou um documento: ${fileName}]`;
@@ -174,8 +240,11 @@ export async function POST(req: Request) {
         }
       } else if (!userText) {
         // Media couldn't be downloaded, provide context
-        if (mediaType === "audio") userText = "[Audio recebido mas nao disponivel para transcricao]";
-        else if (mediaType === "image") userText = "[Imagem recebida mas nao disponivel para analise]";
+        if (mediaType === "audio") {
+          inputWasAudio = true;
+          userText = "[Audio recebido mas nao disponivel para transcricao]";
+        } else if (mediaType === "image") userText = "[Imagem recebida mas nao disponivel para analise]";
+        else if (mediaType === "video") userText = "[Video recebido]";
         else userText = "[Documento recebido]";
       }
     }
@@ -226,11 +295,12 @@ export async function POST(req: Request) {
 
     // Get system prompt (custom or default)
     const systemPrompt = getSystemPrompt(config?.system_prompt);
-    const modelId = config?.model || "gpt-4.1-mini";
+    // Model on OpenRouter (e.g. "openai/gpt-4.1-mini")
+    const modelId = config?.model || "openai/gpt-4.1-mini";
 
-    // Generate AI response with tools
+    // Generate AI response with tools (OpenRouter + web search)
     const result = await generateText({
-      model: openai(modelId),
+      model: openrouter(modelId),
       system: systemPrompt,
       messages,
       tools: {
@@ -368,9 +438,22 @@ export async function POST(req: Request) {
         [phone, "assistant", aiResponse]
       );
 
-      // Send via Evolution (with typing + smart splitting)
-      await sendMessage(phone, aiResponse);
-      console.log(`[WEBHOOK] Responded to ${phone}: ${aiResponse.substring(0, 100)}...`);
+      // If user sent audio, respond with audio (TTS) + text fallback
+      if (inputWasAudio) {
+        const audioBase64 = await textToSpeech(aiResponse);
+        if (audioBase64) {
+          await sendAudioMessage(phone, audioBase64);
+          console.log(`[WEBHOOK] Audio response sent to ${phone}`);
+        } else {
+          // TTS failed, fall back to text
+          await sendMessage(phone, aiResponse);
+          console.log(`[WEBHOOK] TTS failed, text fallback to ${phone}`);
+        }
+      } else {
+        // Regular text response
+        await sendMessage(phone, aiResponse);
+        console.log(`[WEBHOOK] Responded to ${phone}: ${aiResponse.substring(0, 100)}...`);
+      }
     }
 
     return Response.json({ ok: true });
@@ -381,5 +464,5 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  return Response.json({ status: "Vive Pipa webhook active" });
+  return Response.json({ status: "Vive Pipa webhook active", version: "2.1", features: ["openrouter", "websearch", "tts", "base64-media"] });
 }
