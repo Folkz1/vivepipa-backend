@@ -147,14 +147,16 @@ export async function POST(req: NextRequest) {
       responseText = await generateWithOpenRouter(systemPrompt, messages);
     }
 
+    let messageId: string | null = null;
     if (responseText) {
-      await query(
-        `INSERT INTO messages (phone, role, content) VALUES ($1, $2, $3)`,
+      const rows = await query<{ id: string }>(
+        `INSERT INTO messages (phone, role, content) VALUES ($1, $2, $3) RETURNING id`,
         [TEST_PHONE, "assistant", responseText]
       );
+      messageId = rows[0]?.id || null;
     }
 
-    return Response.json({ response: responseText });
+    return Response.json({ response: responseText, message_id: messageId });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error("[TEST] Error:", errMsg);
