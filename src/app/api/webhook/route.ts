@@ -296,6 +296,15 @@ export async function POST(req: Request) {
 
     if (!userText.trim()) return Response.json({ ok: true });
 
+    // Command: #delete — clear conversation history for this phone
+    if (userText.trim().toLowerCase() === "#delete") {
+      await query(`DELETE FROM messages WHERE phone = $1`, [phone]);
+      await query(`DELETE FROM conversations WHERE phone_number = $1`, [phone]);
+      await sendMessage(phone, "Conversa apagada. Envie uma mensagem para comecar de novo.");
+      console.log(`[WEBHOOK] #delete: cleared history for ${phone}`);
+      return Response.json({ ok: true });
+    }
+
     console.log(`[WEBHOOK] ${phone} (${pushName}): ${userText.substring(0, 200)}`);
 
     // Check if bot is active
