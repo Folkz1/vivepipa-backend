@@ -107,7 +107,9 @@ export async function POST(req: NextRequest) {
           query: z.string().optional(),
         }),
         execute: async ({ categoria, query: q }: { categoria?: string; query?: string }) => {
-          let sql = `SELECT nome_servico, category, descricao_completa, valor_adulto, valor_trecho, trecho_principal
+          let sql = `SELECT nome_servico, category, descricao_completa, roteiro, duracao,
+                        valor_adulto, valor_crianca, o_que_inclui, ponto_de_encontro,
+                        tipo_veiculo, capacidade_passageiros, trecho_principal, valor_trecho, observacoes
                      FROM servicos WHERE ativo = true`;
           const params: unknown[] = [];
           if (categoria) { params.push(categoria); sql += ` AND category = $${params.length}`; }
