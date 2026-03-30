@@ -503,7 +503,8 @@ export async function POST(req: Request) {
       }
     }
 
-    const aiResponse = result.text;
+    // Strip inverted punctuation (¿ ¡) — rule from Martin's Sofia brief
+    const aiResponse = result.text.replace(/[¿¡]/g, "");
 
     if (aiResponse) {
       // Save AI response
