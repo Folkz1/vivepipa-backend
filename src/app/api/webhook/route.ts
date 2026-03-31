@@ -394,8 +394,9 @@ export async function POST(req: Request) {
             if (categoria) {
               params.push(categoria);
               sql += ` AND category = $${params.length}`;
-            }
-            if (q) {
+              // Quando categoria já está definida, não aplicar filtro de texto adicional
+              // (evita query longa como "transfer aeroporto natal pipa" zerando resultados)
+            } else if (q) {
               params.push(`%${q}%`);
               sql += ` AND (nome_servico ILIKE $${params.length} OR descricao_completa ILIKE $${params.length} OR observacoes ILIKE $${params.length})`;
             }

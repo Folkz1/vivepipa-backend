@@ -113,8 +113,12 @@ export async function POST(req: NextRequest) {
                         valor_ida_volta, observacoes
                      FROM servicos WHERE ativo = true`;
           const params: unknown[] = [];
-          if (categoria) { params.push(categoria); sql += ` AND category = $${params.length}`; }
-          if (q) {
+          if (categoria) {
+            params.push(categoria);
+            sql += ` AND category = $${params.length}`;
+            // Quando categoria definida, não aplicar filtro de texto extra
+            // (query longa como "transfer aeroporto natal pipa" zeraria resultados)
+          } else if (q) {
             params.push(`%${q}%`);
             sql += ` AND (nome_servico ILIKE $${params.length} OR descricao_completa ILIKE $${params.length} OR observacoes ILIKE $${params.length})`;
           }
