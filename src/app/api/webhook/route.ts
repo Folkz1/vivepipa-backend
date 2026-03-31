@@ -317,16 +317,26 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
+    // Detect language from first word for follow-up messages
+    const firstWord = userText.trim().split(/\s+/)[0].toLowerCase().replace(/[^a-záéíóúñ]/g, "");
+    const detectedLang = /^(hola|buenos|buenas|quiero|para|cuantas|necesito)/.test(firstWord) ? "es"
+      : /^(hi|hello|hey|good|i|can|please|what|how)/.test(firstWord) ? "en"
+      : "pt";
+
     // Upsert conversation
     await query(
-      `INSERT INTO conversations (phone_number, user_name, state, total_messages, last_interaction)
-       VALUES ($1, $2, 'ACTIVE', 1, NOW())
+      `INSERT INTO conversations (phone_number, user_name, state, language, total_messages, last_interaction)
+       VALUES ($1, $2, 'ACTIVE', $3, 1, NOW())
        ON CONFLICT (phone_number) DO UPDATE SET
          user_name = COALESCE(EXCLUDED.user_name, conversations.user_name),
+         language = CASE WHEN conversations.language IS NULL OR conversations.language = 'pt' THEN $3 ELSE conversations.language END,
+         state = CASE WHEN conversations.state = 'QUOTED' THEN 'ACTIVE' ELSE conversations.state END,
+         followup_count = CASE WHEN conversations.state = 'QUOTED' THEN 0 ELSE conversations.followup_count END,
+         last_quote_at = CASE WHEN conversations.state = 'QUOTED' THEN NULL ELSE conversations.last_quote_at END,
          total_messages = conversations.total_messages + 1,
          last_interaction = NOW(),
          updated_at = NOW()`,
-      [phone, pushName || null]
+      [phone, pushName || null, detectedLang]
     );
 
     // Save incoming message
@@ -523,6 +533,15 @@ export async function POST(req: Request) {
         `INSERT INTO messages (phone, role, content) VALUES ($1, $2, $3)`,
         [phone, "assistant", aiResponse]
       );
+
+      // If response contains a price quote, mark conversation as QUOTED for follow-up
+      if (/R\$\s*\d{3,}/.test(aiResponse)) {
+        await query(
+          `UPDATE conversations SET state = 'QUOTED', last_quote_at = NOW()
+           WHERE phone_number = $1 AND state != 'CLOSED'`,
+          [phone]
+        );
+      }
 
       // If user sent audio, respond with audio (TTS) + text fallback
       if (inputWasAudio) {
