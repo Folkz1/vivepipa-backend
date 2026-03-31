@@ -109,11 +109,15 @@ export async function POST(req: NextRequest) {
         execute: async ({ categoria, query: q }: { categoria?: string; query?: string }) => {
           let sql = `SELECT nome_servico, category, descricao_completa, roteiro, duracao,
                         valor_adulto, valor_crianca, o_que_inclui, ponto_de_encontro,
-                        tipo_veiculo, capacidade_passageiros, trecho_principal, valor_trecho, observacoes
+                        tipo_veiculo, capacidade_passageiros, trecho_principal, valor_trecho,
+                        valor_ida_volta, observacoes
                      FROM servicos WHERE ativo = true`;
           const params: unknown[] = [];
           if (categoria) { params.push(categoria); sql += ` AND category = $${params.length}`; }
-          if (q) { params.push(`%${q}%`); sql += ` AND nome_servico ILIKE $${params.length}`; }
+          if (q) {
+            params.push(`%${q}%`);
+            sql += ` AND (nome_servico ILIKE $${params.length} OR descricao_completa ILIKE $${params.length} OR observacoes ILIKE $${params.length})`;
+          }
           sql += " ORDER BY priority LIMIT 10";
           const rows = await query(sql, params);
           return rows.length > 0 ? rows : [{ message: "Nenhum servico encontrado" }];
